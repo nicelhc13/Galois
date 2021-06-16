@@ -66,8 +66,7 @@ void initNodeDataTopological(Graph& g) {
         auto& sdata = g.getData(n, galois::MethodFlag::UNPROTECTED);
         sdata.value = init_value;
         sdata.nout  = 0;
-      },
-      galois::no_stats(), galois::loopname("initNodeData"));
+      }, galois::loopname("initNodeData"));
 }
 
 //! Initialize nodes for the residual algorithm.
@@ -81,8 +80,7 @@ void initNodeDataResidual(Graph& g, DeltaArray& delta,
         sdata.nout  = 0;
         delta[n]    = 0;
         residual[n] = INIT_RESIDUAL;
-      },
-      galois::no_stats(), galois::loopname("initNodeData"));
+      }, galois::loopname("initNodeData"));
 }
 
 //! Computing outdegrees in the tranpose graph is equivalent to computing the
@@ -96,7 +94,7 @@ void computeOutDeg(Graph& graph) {
 
   galois::do_all(
       galois::iterate(graph),
-      [&](const GNode& src) { vec.constructAt(src, 0ul); }, galois::no_stats(),
+      [&](const GNode& src) { vec.constructAt(src, 0ul); }, 
       galois::loopname("InitDegVec"));
 
   galois::do_all(
@@ -107,7 +105,7 @@ void computeOutDeg(Graph& graph) {
           vec[dst].fetch_add(1ul);
         };
       },
-      galois::steal(), galois::chunk_size<CHUNK_SIZE>(), galois::no_stats(),
+      galois::steal(), galois::chunk_size<CHUNK_SIZE>(),
       galois::loopname("computeOutDeg"));
 
   galois::do_all(
@@ -115,8 +113,7 @@ void computeOutDeg(Graph& graph) {
       [&](const GNode& src) {
         auto& srcData = graph.getData(src, galois::MethodFlag::UNPROTECTED);
         srcData.nout  = vec[src];
-      },
-      galois::no_stats(), galois::loopname("CopyDeg"));
+      }, galois::loopname("CopyDeg"));
 
   outDegreeTimer.stop();
 }
@@ -152,8 +149,7 @@ void computePRResidual(Graph& graph, DeltaArray& delta,
               accum += 1;
             }
           }
-        },
-        galois::no_stats(), galois::loopname("PageRank_delta"));
+        }, galois::loopname("PageRank_delta"));
 
     galois::do_all(
         galois::iterate(graph),
@@ -169,7 +165,7 @@ void computePRResidual(Graph& graph, DeltaArray& delta,
             residual[src] = sum;
           }
         },
-        galois::steal(), galois::chunk_size<CHUNK_SIZE>(), galois::no_stats(),
+        galois::steal(), galois::chunk_size<CHUNK_SIZE>(),
         galois::loopname("PageRank"));
 
 #if DEBUG
@@ -198,6 +194,7 @@ void computePRTopological(Graph& graph) {
   galois::GAccumulator<float> accum;
 
   float base_score = (1.0f - ALPHA) / graph.size();
+  std::cout << "base_score:" << base_score << "\n";
   while (true) {
     galois::do_all(
         galois::iterate(graph),
@@ -227,8 +224,7 @@ void computePRTopological(Graph& graph) {
           //! there is a data dependence on the pagerank value.
           sdata.value = value;
           accum += diff;
-        },
-        galois::no_stats(), galois::steal(), galois::chunk_size<CHUNK_SIZE>(),
+        }, galois::steal(), galois::chunk_size<CHUNK_SIZE>(),
         galois::loopname("PageRank"));
 
 #if DEBUG
@@ -294,7 +290,8 @@ int main(int argc, char** argv) {
             << " contains transposed representation\n\n"
             << "Reading graph: " << inputFile << "\n";
 
-  galois::graphs::readGraph(transposeGraph, inputFile);
+  //galois::graphs::readGraph(transposeGraph, inputFile);
+  transposeGraph.readGraphFromGRFile(inputFile);
   std::cout << "Read " << transposeGraph.size() << " nodes, "
             << transposeGraph.sizeEdges() << " edges\n";
 

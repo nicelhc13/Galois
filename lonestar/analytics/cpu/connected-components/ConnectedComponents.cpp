@@ -245,7 +245,8 @@ struct SynchronousAlgo {
 
   template <typename G>
   void readGraph(G& graph) {
-    galois::graphs::readGraph(graph, inputFile);
+    //galois::graphs::readGraph(graph, inputFile);
+    graph.readGraphFromGRFile(inputFile);
   }
 
   struct Edge {
@@ -692,6 +693,9 @@ struct AfforestAlgo {
   }
 
   void operator()(Graph& graph) {
+    galois::StatTimer comp_timer("Computation");
+    comp_timer.start();
+
     // (bozhi) should NOT go through single direction in sampling step: nodes
     // with edges less than NEIGHBOR_SAMPLES will fail
     for (uint32_t r = 0; r < NEIGHBOR_SAMPLES; ++r) {
@@ -755,6 +759,7 @@ struct AfforestAlgo {
           sdata.compress();
         },
         galois::steal(), galois::loopname("Afforest-LCS-Compress"));
+    comp_timer.stop();
   }
 };
 

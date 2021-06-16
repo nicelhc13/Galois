@@ -54,6 +54,11 @@ static cll::opt<unsigned int>
     stepShift("delta",
               cll::desc("Shift value for the deltastep (default value 13)"),
               cll::init(13));
+static cll::opt<std::string> startNodesFile(
+    "startNodesFile",
+    cll::desc("File containing whitespace separated list of source "
+              "nodes for computing breadth-first search; "
+              "if set, -startNodes is ignored"));
 
 enum Algo {
   deltaTile = 0,
@@ -360,11 +365,10 @@ int main(int argc, char** argv) {
   totalTime.start();
 
   Graph graph;
-  GNode source;
-  GNode report;
 
   std::cout << "Reading from file: " << inputFile << "\n";
-  galois::graphs::readGraph(graph, inputFile);
+  //galois::graphs::readGraph(graph, inputFile);
+  graph.readGraphFromGRFile(inputFile);
   std::cout << "Read " << graph.size() << " nodes, " << graph.sizeEdges()
             << " edges\n";
 
@@ -375,12 +379,21 @@ int main(int argc, char** argv) {
     abort();
   }
 
-  auto it = graph.begin();
-  std::advance(it, startNode.getValue());
-  source = *it;
-  it     = graph.begin();
-  std::advance(it, reportNode.getValue());
-  report = *it;
+  std::vector<uint32_t> startNodes;
+  if (!startNodesFile.getValue().empty()) {
+    std::ifstream file(startNodesFile);
+    if (!file.good()) {
+      GALOIS_DIE("failed to open file: {}", startNodesFile);
+    }
+    startNodes.insert(
+        startNodes.end(), std::istream_iterator<uint32_t>{file},
+        std::istream_iterator<uint32_t>{});
+  } else {
+    int startNodeInt = startNode;
+    startNodes.push_back(startNodeInt);
+  }
+  uint32_t num_sources = startNodes.size();
+  std::cout << "Running BFS for " << num_sources << " sources\n";
 
   size_t approxNodeData = graph.size() * 64;
   galois::preAlloc(numThreads +
@@ -396,110 +409,112 @@ int main(int argc, char** argv) {
         << "WARNING: Do not expect the default to be good for your graph.\n";
   }
 
-  galois::do_all(galois::iterate(graph),
-                 [&graph](GNode n) { graph.getData(n) = SSSP::DIST_INFINITY; });
+  for (auto source : startNodes) {
+    galois::do_all(galois::iterate(graph),
+                   [&graph](GNode n) { graph.getData(n) = SSSP::DIST_INFINITY; });
 
-  graph.getData(source) = 0;
+    graph.getData(source) = 0;
 
-  std::cout << "Running " << ALGO_NAMES[algo] << " algorithm\n";
+    std::cout << "Running " << ALGO_NAMES[algo] << " algorithm\n";
 
-  galois::StatTimer autoAlgoTimer("AutoAlgo_0");
-  galois::StatTimer execTime("Timer_0");
-  execTime.start();
+    galois::StatTimer autoAlgoTimer("AutoAlgo_0");
+    galois::StatTimer execTime("Timer_0");
+    execTime.start();
 
-  if (algo == AutoAlgo) {
-    autoAlgoTimer.start();
-    if (isApproximateDegreeDistributionPowerLaw(graph)) {
-      algo = deltaStep;
-    } else {
-      algo = deltaStepBarrier;
+    if (algo == AutoAlgo) {
+      autoAlgoTimer.start();
+      if (isApproximateDegreeDistributionPowerLaw(graph)) {
+        algo = deltaStep;
+      } else {
+        algo = deltaStepBarrier;
+      }
+      autoAlgoTimer.stop();
+      galois::gInfo("Choosing ", ALGO_NAMES[algo], " algorithm");
     }
-    autoAlgoTimer.stop();
-    galois::gInfo("Choosing ", ALGO_NAMES[algo], " algorithm");
-  }
 
-  switch (algo) {
-  case deltaTile:
-    deltaStepAlgo<SrcEdgeTile>(graph, source, SrcEdgeTilePushWrap{graph},
-                               TileRangeFn());
-    break;
-  case deltaStep:
-    deltaStepAlgo<UpdateRequest>(graph, source, ReqPushWrap(),
-                                 OutEdgeRangeFn{graph});
-    break;
-  case serDeltaTile:
-    serDeltaAlgo<SrcEdgeTile>(graph, source, SrcEdgeTilePushWrap{graph},
-                              TileRangeFn());
-    break;
-  case serDelta:
-    serDeltaAlgo<UpdateRequest>(graph, source, ReqPushWrap(),
-                                OutEdgeRangeFn{graph});
-    break;
-  case dijkstraTile:
-    dijkstraAlgo<SrcEdgeTile>(graph, source, SrcEdgeTilePushWrap{graph},
-                              TileRangeFn());
-    break;
-  case dijkstra:
-    dijkstraAlgo<UpdateRequest>(graph, source, ReqPushWrap(),
-                                OutEdgeRangeFn{graph});
-    break;
-  case topo:
-    topoAlgo(graph, source);
-    break;
-  case topoTile:
-    topoTileAlgo(graph, source);
-    break;
+    switch (algo) {
+    case deltaTile:
+      deltaStepAlgo<SrcEdgeTile>(graph, source, SrcEdgeTilePushWrap{graph},
+                                 TileRangeFn());
+      break;
+    case deltaStep:
+      deltaStepAlgo<UpdateRequest>(graph, source, ReqPushWrap(),
+                                   OutEdgeRangeFn{graph});
+      break;
+    case serDeltaTile:
+      serDeltaAlgo<SrcEdgeTile>(graph, source, SrcEdgeTilePushWrap{graph},
+                                TileRangeFn());
+      break;
+    case serDelta:
+      serDeltaAlgo<UpdateRequest>(graph, source, ReqPushWrap(),
+                                  OutEdgeRangeFn{graph});
+      break;
+    case dijkstraTile:
+      dijkstraAlgo<SrcEdgeTile>(graph, source, SrcEdgeTilePushWrap{graph},
+                                TileRangeFn());
+      break;
+    case dijkstra:
+      dijkstraAlgo<UpdateRequest>(graph, source, ReqPushWrap(),
+                                  OutEdgeRangeFn{graph});
+      break;
+    case topo:
+      topoAlgo(graph, source);
+      break;
+    case topoTile:
+      topoTileAlgo(graph, source);
+      break;
 
-  case deltaStepBarrier:
-    deltaStepAlgo<UpdateRequest, OBIM_Barrier>(graph, source, ReqPushWrap(),
-                                               OutEdgeRangeFn{graph});
-    break;
+    case deltaStepBarrier:
+      deltaStepAlgo<UpdateRequest, OBIM_Barrier>(graph, source, ReqPushWrap(),
+                                                 OutEdgeRangeFn{graph});
+      break;
 
-  default:
-    std::abort();
-  }
+    default:
+      std::abort();
+    }
 
-  execTime.stop();
+    execTime.stop();
 
-  galois::reportPageAlloc("MeminfoPost");
+    galois::reportPageAlloc("MeminfoPost");
 
-  std::cout << "Node " << reportNode << " has distance "
-            << graph.getData(report) << "\n";
+    std::cout << "Node " << reportNode << " has distance "
+              << graph.getData(reportNode) << "\n";
 
-  // Sanity checking code
-  galois::GReduceMax<uint64_t> maxDistance;
-  galois::GAccumulator<uint64_t> distanceSum;
-  galois::GAccumulator<uint32_t> visitedNode;
-  maxDistance.reset();
-  distanceSum.reset();
-  visitedNode.reset();
+    // Sanity checking code
+    galois::GReduceMax<uint64_t> maxDistance;
+    galois::GAccumulator<uint64_t> distanceSum;
+    galois::GAccumulator<uint32_t> visitedNode;
+    maxDistance.reset();
+    distanceSum.reset();
+    visitedNode.reset();
 
-  galois::do_all(
-      galois::iterate(graph),
-      [&](uint64_t i) {
-        uint32_t myDistance = graph.getData(i);
+    galois::do_all(
+        galois::iterate(graph),
+        [&](uint64_t i) {
+          uint32_t myDistance = graph.getData(i);
 
-        if (myDistance != SSSP::DIST_INFINITY) {
-          maxDistance.update(myDistance);
-          distanceSum += myDistance;
-          visitedNode += 1;
-        }
-      },
-      galois::loopname("Sanity check"), galois::no_stats());
+          if (myDistance != SSSP::DIST_INFINITY) {
+            maxDistance.update(myDistance);
+            distanceSum += myDistance;
+            visitedNode += 1;
+          }
+        },
+        galois::loopname("Sanity check"), galois::no_stats());
 
-  // report sanity stats
-  uint64_t rMaxDistance = maxDistance.reduce();
-  uint64_t rDistanceSum = distanceSum.reduce();
-  uint64_t rVisitedNode = visitedNode.reduce();
-  galois::gInfo("# visited nodes is ", rVisitedNode);
-  galois::gInfo("Max distance is ", rMaxDistance);
-  galois::gInfo("Sum of visited distances is ", rDistanceSum);
+    // report sanity stats
+    uint64_t rMaxDistance = maxDistance.reduce();
+    uint64_t rDistanceSum = distanceSum.reduce();
+    uint64_t rVisitedNode = visitedNode.reduce();
+    galois::gInfo("# visited nodes is ", rVisitedNode);
+    galois::gInfo("Max distance is ", rMaxDistance);
+    galois::gInfo("Sum of visited distances is ", rDistanceSum);
 
-  if (!skipVerify) {
-    if (SSSP::verify(graph, source)) {
-      std::cout << "Verification successful.\n";
-    } else {
-      GALOIS_DIE("verification failed");
+    if (!skipVerify) {
+      if (SSSP::verify(graph, source)) {
+        std::cout << "Verification successful.\n";
+      } else {
+        GALOIS_DIE("verification failed");
+      }
     }
   }
 

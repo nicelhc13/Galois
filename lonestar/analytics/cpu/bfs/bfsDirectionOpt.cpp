@@ -61,6 +61,12 @@ static cll::opt<unsigned int>
     reportNode("reportNode",
                cll::desc("Node to report distance to (default value 1)"),
                cll::init(1));
+static cll::opt<std::string> startNodesFile(
+    "startNodesFile",
+    cll::desc("File containing whitespace separated list of source "
+              "nodes for computing breadth-first search; "
+              "if set, -startNodes is ignored"));
+
 static cll::opt<unsigned int>
     numRuns("numRuns", cll::desc("Number of runs (default value 1)"),
             cll::init(1));
@@ -251,7 +257,8 @@ void syncDOAlgo(Graph& graph, GNode source, const P& pushWrap,
   writes_pull.reset();
   // std::vector<uint32_t> pull_levels;
   // pull_levels.reserve(10);
-
+  galois::StatTimer comp_timer("Computation");
+  comp_timer.start();
   while (!next->empty()) {
 
     std::swap(curr, next);
@@ -337,6 +344,8 @@ void syncDOAlgo(Graph& graph, GNode source, const P& pushWrap,
     }
   }
 
+  comp_timer.stop();
+
   delete curr;
   delete next;
 }
@@ -414,8 +423,6 @@ int main(int argc, char** argv) {
   totalTime.start();
 
   Graph graph;
-  GNode source;
-  GNode report;
 
   galois::StatTimer StatTimer_graphConstuct("TimerConstructGraph", "BFS");
   StatTimer_graphConstuct.start();
@@ -431,89 +438,101 @@ int main(int argc, char** argv) {
     abort();
   }
 
-  auto it = graph.begin();
-  std::advance(it, startNode.getValue());
-  source = *it;
-  it     = graph.begin();
-  std::advance(it, reportNode.getValue());
-  report = *it;
+  std::vector<uint32_t> startNodes;
+  if (!startNodesFile.getValue().empty()) {
+    std::ifstream file(startNodesFile);
+    if (!file.good()) {
+      GALOIS_DIE("failed to open file: {}", startNodesFile);
+    }
+    startNodes.insert(
+        startNodes.end(), std::istream_iterator<uint32_t>{file},
+        std::istream_iterator<uint32_t>{});
+  } else {
+    int startNodeInt = startNode;
+    startNodes.push_back(startNodeInt);
+  }
+  uint32_t num_sources = startNodes.size();
+  std::cout << "Running BFS for " << num_sources << " sources\n";
 
   galois::preAlloc(preAlloc);
   galois::gPrint("Fixed preAlloc done : ", preAlloc, "\n");
   galois::reportPageAlloc("MeminfoPre");
 
-  galois::do_all(galois::iterate(graph),
-                 [&graph](GNode n) { graph.getData(n) = BFS::DIST_INFINITY; });
+  for (auto source : startNodes) {
+    galois::do_all(galois::iterate(graph),
+                   [&graph](GNode n) { graph.getData(n) = BFS::DIST_INFINITY; });
 
-  graph.getData(source) = 0;
+    graph.getData(source) = 0;
 
-  std::cout << "Running " << ALGO_NAMES[algo] << " algorithm with "
-            << (bool(execution) ? "PARALLEL" : "SERIAL") << " execution\n";
+    std::cout << "Running " << ALGO_NAMES[algo] << " algorithm with "
+              << (bool(execution) ? "PARALLEL" : "SERIAL") << " execution\n";
 
-  std::cout
-      << "WARNING: This bfs version uses bi-directional CSR graph "
-      << "and assigns parent instead of the shortest distance from source\n";
-  if (algo == Async) {
-    std::cout << "WARNING: Async bfs does not use direction optimization. "
-              << "It uses Galois for_each for asynchronous execution which is "
-                 "advantageous "
-              << "for large diameter graphs such as road networks\n";
-  }
-
-  std::cout << " Execution started\n";
-
-  galois::StatTimer autoAlgoTimer("AutoAlgo_0");
-  galois::StatTimer execTime("Timer_0");
-  execTime.start();
-
-  if (algo == AutoAlgo) {
-    autoAlgoTimer.start();
-    if (isApproximateDegreeDistributionPowerLaw(graph)) {
-      algo = SyncDO;
-    } else {
-      algo = Async;
-    }
-    autoAlgoTimer.stop();
-    galois::gInfo("Choosing ", ALGO_NAMES[algo], " algorithm");
-  }
-
-  for (unsigned int run = 0; run < numRuns; ++run) {
-    galois::gPrint("BFS::go run ", run, " called\n");
-    std::string timer_str("Timer_Run" + std::to_string(run));
-    galois::StatTimer StatTimer_main(timer_str.c_str(), "BFS");
-    StatTimer_main.start();
-
-    if (execution == SERIAL) {
-      runAlgo<false>(graph, source, run);
-    } else if (execution == PARALLEL) {
-      galois::runtime::profileVtune(
-          [&]() { runAlgo<true>(graph, source, run); }, "runAlgo");
-    } else {
-      std::cerr << "ERROR: unknown type of execution passed to -exec\n";
-      std::abort();
+    std::cout
+        << "WARNING: This bfs version uses bi-directional CSR graph "
+        << "and assigns parent instead of the shortest distance from source\n";
+    if (algo == Async) {
+      std::cout << "WARNING: Async bfs does not use direction optimization. "
+                << "It uses Galois for_each for asynchronous execution which is "
+                   "advantageous "
+                << "for large diameter graphs such as road networks\n";
     }
 
-    StatTimer_main.stop();
+    std::cout << " Execution started\n";
 
-    if ((run + 1) != numRuns) {
-      for (unsigned int i = 0; i < 1; ++i) {
-        galois::do_all(galois::iterate(graph), [&graph](GNode n) {
-          graph.getData(n) = BFS::DIST_INFINITY;
-        });
+    galois::StatTimer autoAlgoTimer("AutoAlgo_0");
+    galois::StatTimer execTime("Timer_0");
+    execTime.start();
+
+    if (algo == AutoAlgo) {
+      autoAlgoTimer.start();
+      if (isApproximateDegreeDistributionPowerLaw(graph)) {
+        algo = SyncDO;
+      } else {
+        algo = Async;
+      }
+      autoAlgoTimer.stop();
+      galois::gInfo("Choosing ", ALGO_NAMES[algo], " algorithm");
+    }
+
+    for (unsigned int run = 0; run < numRuns; ++run) {
+      galois::gPrint("BFS::go run ", run, " called\n");
+      std::string timer_str("Timer_Run" + std::to_string(run));
+      galois::StatTimer StatTimer_main(timer_str.c_str(), "BFS");
+      StatTimer_main.start();
+
+      if (execution == SERIAL) {
+        runAlgo<false>(graph, source, run);
+      } else if (execution == PARALLEL) {
+        runAlgo<true>(graph, source, run);
+        //galois::runtime::profileVtune(
+        //    [&]() { runAlgo<true>(graph, source, run); }, "runAlgo");
+      } else {
+        std::cerr << "ERROR: unknown type of execution passed to -exec\n";
+        std::abort();
+      }
+
+      StatTimer_main.stop();
+
+      if ((run + 1) != numRuns) {
+        for (unsigned int i = 0; i < 1; ++i) {
+          galois::do_all(galois::iterate(graph), [&graph](GNode n) {
+            graph.getData(n) = BFS::DIST_INFINITY;
+          });
+        }
       }
     }
-  }
 
-  execTime.stop();
+    execTime.stop();
 
-  galois::reportPageAlloc("MeminfoPost");
+    galois::reportPageAlloc("MeminfoPost");
 
-  std::cout << "Node " << reportNode << " has parent " << graph.getData(report)
-            << "\n";
+    std::cout << "Node " << reportNode << " has parent " << graph.getData(reportNode)
+              << "\n";
 
-  if (!skipVerify) {
-    for (GNode n = 0; n < numPrint; n++) {
-      galois::gPrint("parent[", n, "] : ", graph.getData(n), "\n");
+    if (!skipVerify) {
+      for (GNode n = 0; n < numPrint; n++) {
+        galois::gPrint("parent[", n, "] : ", graph.getData(n), "\n");
+      }
     }
   }
 

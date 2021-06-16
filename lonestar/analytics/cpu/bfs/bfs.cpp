@@ -28,6 +28,7 @@
 
 #include "llvm/Support/CommandLine.h"
 
+#include <iterator>
 #include <iostream>
 #include <deque>
 #include <type_traits>
@@ -52,6 +53,11 @@ static cll::opt<unsigned int>
     reportNode("reportNode",
                cll::desc("Node to report distance to (default value 1)"),
                cll::init(1));
+static cll::opt<std::string> startNodesFile(
+    "startNodesFile",
+    cll::desc("File containing whitespace separated list of source "
+              "nodes for computing breadth-first search; "
+              "if set, -startNodes is ignored"));
 
 // static cll::opt<unsigned int> stepShiftw("delta",
 // cll::desc("Shift value for the deltastep"),
@@ -325,11 +331,10 @@ int main(int argc, char** argv) {
   totalTime.start();
 
   Graph graph;
-  GNode source;
-  GNode report;
 
   std::cout << "Reading from file: " << inputFile << "\n";
-  galois::graphs::readGraph(graph, inputFile);
+  //galois::graphs::readGraph(graph, inputFile);
+  graph.readGraphFromGRFile(inputFile);
   std::cout << "Read " << graph.size() << " nodes, " << graph.sizeEdges()
             << " edges\n";
 
@@ -339,12 +344,21 @@ int main(int argc, char** argv) {
     abort();
   }
 
-  auto it = graph.begin();
-  std::advance(it, startNode.getValue());
-  source = *it;
-  it     = graph.begin();
-  std::advance(it, reportNode.getValue());
-  report = *it;
+  std::vector<uint32_t> startNodes;
+  if (!startNodesFile.getValue().empty()) {
+    std::ifstream file(startNodesFile);
+    if (!file.good()) {
+      GALOIS_DIE("failed to open file: {}", startNodesFile);
+    }
+    startNodes.insert(
+        startNodes.end(), std::istream_iterator<uint32_t>{file},
+        std::istream_iterator<uint32_t>{});
+  } else {
+    int startNodeInt = startNode;
+    startNodes.push_back(startNodeInt);
+  }
+  uint32_t num_sources = startNodes.size();
+  std::cout << "Running BFS for " << num_sources << " sources\n";
 
   size_t approxNodeData = 4 * (graph.size() + graph.sizeEdges());
   galois::preAlloc(8 * numThreads +
@@ -352,65 +366,67 @@ int main(int argc, char** argv) {
 
   galois::reportPageAlloc("MeminfoPre");
 
-  galois::do_all(galois::iterate(graph),
-                 [&graph](GNode n) { graph.getData(n) = BFS::DIST_INFINITY; });
-  graph.getData(source) = 0;
+  for (auto source : startNodes) {
+    galois::do_all(galois::iterate(graph),
+                   [&graph](GNode n) { graph.getData(n) = BFS::DIST_INFINITY; });
+    graph.getData(source) = 0;
 
-  std::cout << "Running " << ALGO_NAMES[algo] << " algorithm with "
-            << (bool(execution) ? "PARALLEL" : "SERIAL") << " execution\n";
+    std::cout << "Running " << ALGO_NAMES[algo] << " algorithm with "
+              << (bool(execution) ? "PARALLEL" : "SERIAL") << " execution\n";
 
-  galois::StatTimer execTime("Timer_0");
-  execTime.start();
+    galois::StatTimer execTime("Timer_0");
+    execTime.start();
 
-  if (execution == SERIAL) {
-    runAlgo<false>(graph, source);
-  } else if (execution == PARALLEL) {
-    runAlgo<true>(graph, source);
-  } else {
-    std::cerr << "ERROR: unknown type of execution passed to -exec\n";
-  }
-
-  execTime.stop();
-
-  galois::reportPageAlloc("MeminfoPost");
-
-  std::cout << "Node " << reportNode << " has distance "
-            << graph.getData(report) << "\n";
-
-  // Sanity checking code
-  galois::GReduceMax<uint64_t> maxDistance;
-  galois::GAccumulator<uint64_t> distanceSum;
-  galois::GAccumulator<uint32_t> visitedNode;
-  maxDistance.reset();
-  distanceSum.reset();
-  visitedNode.reset();
-
-  galois::do_all(
-      galois::iterate(graph),
-      [&](uint64_t i) {
-        uint32_t myDistance = graph.getData(i);
-
-        if (myDistance != BFS::DIST_INFINITY) {
-          maxDistance.update(myDistance);
-          distanceSum += myDistance;
-          visitedNode += 1;
-        }
-      },
-      galois::loopname("Sanity check"), galois::no_stats());
-
-  // report sanity stats
-  uint64_t rMaxDistance = maxDistance.reduce();
-  uint64_t rDistanceSum = distanceSum.reduce();
-  uint64_t rVisitedNode = visitedNode.reduce();
-  galois::gInfo("# visited nodes is ", rVisitedNode);
-  galois::gInfo("Max distance is ", rMaxDistance);
-  galois::gInfo("Sum of visited distances is ", rDistanceSum);
-
-  if (!skipVerify) {
-    if (BFS::verify(graph, source)) {
-      std::cout << "Verification successful.\n";
+    if (execution == SERIAL) {
+      runAlgo<false>(graph, source);
+    } else if (execution == PARALLEL) {
+      runAlgo<true>(graph, source);
     } else {
-      GALOIS_DIE("verification failed");
+      std::cerr << "ERROR: unknown type of execution passed to -exec\n";
+    }
+
+    execTime.stop();
+
+    galois::reportPageAlloc("MeminfoPost");
+
+    std::cout << "Node " << reportNode << " has distance "
+              << graph.getData(reportNode) << "\n";
+
+    // Sanity checking code
+    galois::GReduceMax<uint64_t> maxDistance;
+    galois::GAccumulator<uint64_t> distanceSum;
+    galois::GAccumulator<uint32_t> visitedNode;
+    maxDistance.reset();
+    distanceSum.reset();
+    visitedNode.reset();
+
+    galois::do_all(
+        galois::iterate(graph),
+        [&](uint64_t i) {
+          uint32_t myDistance = graph.getData(i);
+
+          if (myDistance != BFS::DIST_INFINITY) {
+            maxDistance.update(myDistance);
+            distanceSum += myDistance;
+            visitedNode += 1;
+          }
+        },
+        galois::loopname("Sanity check"), galois::no_stats());
+
+    // report sanity stats
+    uint64_t rMaxDistance = maxDistance.reduce();
+    uint64_t rDistanceSum = distanceSum.reduce();
+    uint64_t rVisitedNode = visitedNode.reduce();
+    galois::gInfo("# visited nodes is ", rVisitedNode);
+    galois::gInfo("Max distance is ", rMaxDistance);
+    galois::gInfo("Sum of visited distances is ", rDistanceSum);
+
+    if (!skipVerify) {
+      if (BFS::verify(graph, source)) {
+        std::cout << "Verification successful.\n";
+      } else {
+        GALOIS_DIE("verification failed");
+      }
     }
   }
 

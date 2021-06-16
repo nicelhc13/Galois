@@ -244,7 +244,8 @@ int main(int argc, char** argv) {
   galois::StatTimer graphReadingTimer("GraphConstructTime", REGION_NAME);
   graphReadingTimer.start();
   Graph graph;
-  galois::graphs::readGraph(graph, inputFile);
+  //galois::graphs::readGraph(graph, inputFile);
+  graph.readGraphFromGRFile(inputFile);
   graphReadingTimer.stop();
 
   //! Preallocate pages in memory so allocation doesn't occur during compute.
